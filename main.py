@@ -1,6 +1,6 @@
 import asyncio
 from telethon import TelegramClient, events
-from telethon.errors import ChatWriteForbiddenError, FloodWaitError
+from telethon.errors import ChatWriteForbiddenError, FloodWaitError, ConnectionError
 
 # ==========================
 # MASUKKAN API ID & HASH KAMU
@@ -61,26 +61,47 @@ async def savforward_cmd(event):
         await event.respond("⚠️ Reply ke pesan dulu untuk disimpan.")
 
 # ==========================
-# Kirim pesan forward ke semua grup/channel (dengan fallback)
+# Helper Forward / Send
 # ==========================
 async def forward_or_send(msg, chat_id):
+    """Coba forward, kalau gagal kirim manual. Return True jika berhasil, False jika gagal"""
     try:
         await msg.forward_to(chat_id)
-    except (ChatWriteForbiddenError, FloodWaitError):
+        return True
+    except ChatWriteForbiddenError:
+        print(f"⚠️ Tidak bisa kirim ke {chat_id} (ChatWriteForbidden)")
+        return False
+    except FloodWaitError as fw:
+        print(f"Tunggu {fw.seconds} detik (FloodWait).")
+        await asyncio.sleep(fw.seconds)
         try:
             if msg.media:
                 await client.send_file(chat_id, msg.media, caption=msg.text or "")
             else:
                 await client.send_message(chat_id, msg.text or "")
-        except FloodWaitError as fw:
-            await asyncio.sleep(fw.seconds)
+            return True
         except Exception as e2:
             print(f"Gagal kirim manual ke {chat_id}: {e2}")
-            raise
+            return False
+    except ConnectionError:
+        print(f"⚠️ Terputus saat kirim ke {chat_id}, mencoba reconnect...")
+        await client.connect()
+        try:
+            if msg.media:
+                await client.send_file(chat_id, msg.media, caption=msg.text or "")
+            else:
+                await client.send_message(chat_id, msg.text or "")
+            return True
+        except Exception as e3:
+            print(f"Gagal setelah reconnect ke {chat_id}: {e3}")
+            return False
     except Exception as e:
         print(f"Gagal forward ke {chat_id}: {e}")
-        raise
+        return False
 
+# ==========================
+# Send Forward
+# ==========================
 @client.on(events.NewMessage(outgoing=True, pattern=f"\\{PREFIX}sendforward (.+)"))
 async def sendforward_cmd(event):
     name = event.pattern_match.group(1)
@@ -93,12 +114,12 @@ async def sendforward_cmd(event):
 
     async for dialog in client.iter_dialogs():
         if dialog.is_group or dialog.is_channel:
-            try:
-                await forward_or_send(msg, dialog.id)
+            result = await forward_or_send(msg, dialog.id)
+            if result:
                 success += 1
-                await asyncio.sleep(default_delay)
-            except:
+            else:
                 failed += 1
+            await asyncio.sleep(default_delay)
 
     await event.respond(
         f"✅ Forward selesai\n"
@@ -148,17 +169,12 @@ async def broadcast_cmd(event):
     success, failed = 0, 0
     async for dialog in client.iter_dialogs():
         if dialog.is_group or dialog.is_channel or dialog.is_user:
-            try:
-                await client.send_message(dialog.id, text)
+            result = await forward_or_send(await client.send_message(dialog.id, text), dialog.id)
+            if result:
                 success += 1
-                await asyncio.sleep(default_delay)
-            except ChatWriteForbiddenError:
+            else:
                 failed += 1
-            except FloodWaitError as fw:
-                await asyncio.sleep(fw.seconds)
-            except Exception as e:
-                failed += 1
-                print(f"Gagal kirim ke {dialog.name}: {e}")
+            await asyncio.sleep(default_delay)
     await event.respond(
         f"✅ Broadcast selesai\n"
         f"✔️ Berhasil: {success}\n"
@@ -201,14 +217,14 @@ async def auto_forward_listener(event):
     success, failed = 0, 0
     async for dialog in client.iter_dialogs():
         if dialog.is_group or dialog.is_channel:
-            try:
-                await forward_or_send(msg, dialog.id)
+            result = await forward_or_send(msg, dialog.id)
+            if result:
                 success += 1
-                await asyncio.sleep(default_delay)
-            except:
+            else:
                 failed += 1
+            await asyncio.sleep(default_delay)
     if success or failed:
-        print(f"Auto-forward: ✔️ {success} grup/channel berhasil, ❌ {failed} gagal")
+        print(f"Auto-forward: ✔️ {success} berhasil, ❌ {failed} gagal")
 
 # ==========================
 # Jalankan Bot
